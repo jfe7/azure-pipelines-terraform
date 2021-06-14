@@ -1,0 +1,198 @@
+
+#
+#    Name:            Terraform-Stages-Template.yml
+#
+#    Description:     Multi Stage YAML Pipeline For Terraform Deployments
+#
+#    Project:         Azure Pipelines Terraform [APT]
+#
+#    Author:          James Ferrari
+#
+#    Version:         1.0
+#
+#    Date:            01/01/2021    
+#
+#    Version 1.0      01/01/2021      First Release
+#
+
+
+############################################
+# Runime Parameters, Mandatory. ############
+
+parameters:
+
+- name: terraformVersion
+  type: string
+  default: 0.14.5
+
+- name: resourceGroup
+  type: string
+  values:
+    - apt-prod-uks-rg 
+    - apt-uat-uks-rg
+    - apt-dev-uks-rg
+
+- name: environment
+  type: string
+  values:
+    - Prod
+    - UAT
+    - Dev
+
+############################################
+# Terraform Plan Stage. ####################
+
+stages:
+  - stage: 'Terraform_Plan_${{ parameters.environment }}'
+    displayName: 'Terraform Plan ${{ parameters.environment }}'
+    variables:
+    - group: 'AZURE-BACKEND' # Azure DevOps Group Secret.
+    jobs:
+    - job: 'Terraform_Plan_${{ parameters.environment }}'
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+
+        # Install Terraform Version Specified In Paramater.
+        - task: TerraformInstaller@0
+          displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+          inputs:
+            terraformVersion: '${{ parameters.terraformVersion }}' # Install Version Of Terraform on Agent Specified In Param.
+
+
+        # Initialize Terraform.
+        # Fetch Variable Group Secrets To Store Into Environment Variables.
+        - bash: |
+              echo 'Initializing Terraform, Please Wait...'
+              
+              cd $(System.DefaultWorkingDirectory)/terraform/infrastructure ;
+
+              terraform init \
+              -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
+              -backend-config="access_key=$ACCESS_KEY" \
+              -backend-config="container_name=$STORAGE_CONTAINER" \
+              -backend-config="key=${{ parameters.resourceGroup }}/terraform.tfstate"
+              
+          displayName: 'Terraform Init'
+          env:
+            STORAGE_ACCOUNT: $(STORAGE_ACCOUNT)
+            STORAGE_CONTAINER: $(STORAGE_CONTAINER)
+            ACCESS_KEY: $(ACCESS_KEY)
+
+
+        # ---------------------------------------------------------------------------------------------------------------
+        # Terraform Plan
+        # Do NOT use Azure Cli to authenticate, this can cause issues with MFA and is not best practice.
+        # Use Azure Resource Manager API by setting our Service Principal's client secret as environment variables (fetched from Variable Group Secret).
+        # This is considered best practice by Hashicorp when running in a CI/CD Pipeline: https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/azure_cli
+        # ---------------------------------------------------------------------------------------------------------------
+        - bash: |
+              echo 'Terraform is Planning The Deployment, Please Wait...'
+
+              cd $(System.DefaultWorkingDirectory)/terraform/infrastructure ;
+
+              terraform plan \
+              -input=false \
+              -var-file=$(System.DefaultWorkingDirectory)/terraform/infrastructure/environments/${{ lower(parameters.environment) }}.tfvars \
+              -out=${{ lower(parameters.environment) }}-tfplan
+                
+          displayName: Terraform Plan
+          env:
+            ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+            ARM_CLIENT_ID:       $(ARM_CLIENT_ID)
+            ARM_CLIENT_SECRET:   $(ARM_CLIENT_SECRET)
+            ARM_TENANT_ID:       $(ARM_TENANT_ID)
+
+
+        # Zip (Archive) Terraform Files Generated Above.
+        - task: ArchiveFiles@2
+          displayName: 'Zip Terraform Files'
+          inputs:
+            rootFolderOrFile: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
+            archiveType: tar
+            archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-tfplan.tgz'
+
+
+        # Publish Zip As Pipeline Artifact To Be Downloaded For Deployment.
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish Terraform Artifacts'
+          inputs:
+            targetPath: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-tfplan.tgz'
+            publishLocation: pipeline
+            artifact: '$(Build.BuildId)-${{ lower(parameters.environment) }}-tfplan'
+
+            
+############################################
+# Terraform Apply Stage. ###################
+
+  - stage: Terraform_Apply_${{ parameters.environment }}
+    displayName: Terraform Apply ${{ parameters.environment }}
+    variables:
+      - group: 'AZURE-BACKEND' # Azure DevOps Group Secret.
+    jobs:
+      - deployment: Terraform_Apply_${{ parameters.environment }}
+        pool:
+          vmImage: 'ubuntu-latest'
+        continueOnError: false
+        environment: ${{ parameters.environment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+
+                # Install Terraform Version Specified In Paramater.
+                - task: TerraformInstaller@0
+                  displayName: Install Terraform ${{ parameters.terraformVersion }}
+                  inputs:
+                    terraformVersion: '${{ parameters.terraformVersion }}'
+                  
+
+                # Extract Artifact.
+                # NOTE: Artifacts Automatically Downloaded.
+                - task: ExtractFiles@1
+                  displayName: Extract Terraform Artifacts
+                  inputs:
+                    archiveFilePatterns: '$(Pipeline.Workspace)/$(Build.BuildId)-${{ lower(parameters.environment) }}-tfplan/$(Build.BuildId)-tfplan.tgz'
+                    destinationFolder: '$(System.DefaultWorkingDirectory)/'
+                    cleanDestinationFolder: false
+                    overwriteExistingFiles: true
+                
+
+                # Initialize Terraform
+                # Fetch Variable Group Secrets and Store into Environment Variable To Configure Backend.
+                - bash: |
+                      echo 'Initializing Terraform, Please Wait...'
+
+                      cd $(System.DefaultWorkingDirectory)/infrastructure
+
+                      terraform init \
+                      -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
+                      -backend-config="access_key=$ACCESS_KEY" \
+                      -backend-config="container_name=$STORAGE_CONTAINER" \
+                      -backend-config="key=${{ parameters.resourceGroup }}/terraform.tfstate"
+
+                  displayName: Terraform Init
+                  env:
+                    STORAGE_ACCOUNT: $(STORAGE_ACCOUNT)
+                    STORAGE_CONTAINER: $(STORAGE_CONTAINER)
+                    ACCESS_KEY: $(ACCESS_KEY)
+
+
+                # Terraform Apply
+                # Do NOT use Azure Cli to authenticate, this can cause issues with MFA and is not best practice.
+                # Use Azure Resource Manager API by setting our Service Principal's client secret as environment variables (fetched from Variable Group Secret).
+                # This is considered best practice by Hashicorp when running in a CI/CD Pipeline: https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/guides/azure_cli
+                - bash: |
+                      cd $(System.DefaultWorkingDirectory)/infrastructure
+
+                      terraform apply \
+                      -auto-approve \
+                      -input=false \
+                      ${{ lower(parameters.environment) }}-tfplan
+                    
+                  displayName: Terraform Apply
+                  env:
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+                    ARM_CLIENT_ID:       $(ARM_CLIENT_ID)
+                    ARM_CLIENT_SECRET:   $(ARM_CLIENT_SECRET)
+                    ARM_TENANT_ID:       $(ARM_TENANT_ID)
