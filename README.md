@@ -17,11 +17,23 @@
 [/terraform/pipeline](https://github.com/jfe7/azure-pipelines-terraform/tree/main/terraform/pipeline) - Terraform Stages Template YAML Pipeline & Azure Pipelines YAML 
 
 ## Template Usage
-
+### Parameters
 The Terraform Pipeline Template [/terraform/pipeline/terraform-stages-template.yml](https://github.com/jfe7/azure-pipelines-terraform/blob/main/terraform/pipeline/terraform-stages-template.yml) has three mandatory parameters that must be passed using [/terraform/pipeline/azure-pipelines.yml](https://github.com/jfe7/azure-pipelines-terraform/blob/main/terraform/pipeline/azure-pipelines.yml).
 
 - terraformVersion - [version of Terraform to install on Build Agent, defaults to 0.14.5]
 - resourceGroup - [name of Resource Group for Environment, this is only used to seperate terraform state files]
 - environment - [determines which environment resources are deployed to / determines which .tfvars file is passed to Terraform to inject variables]
 
+### Azure DevOps Environments
 This template uses Environments in Azure DevOps, be sure to add approvers to the Environment in Azure DevOps, this results in the Pipeline needing approval to move onto the Terraform Apply Stage, this allows approvers to check the Terraform Plan output and make sure Terraform is going to create/update/delete the expected resources, once the approver is happy with the output, they can approve the stage, and allow the pipeline to move to the Terraform Apply Stage.
+
+### Variable Groups
+A variable group named 'AZURE-BACKEND' is required, the variable group contains variable secrets to access to the Azure Storage Account storing Terraform State and variable secrets for Terraform authenticating with Azure.
+
+STORAGE_ACCOUNT\
+STORAGE_CONTAINER\
+ACCESS_KEY\
+ARM_SUBSCRIPTION_ID\
+ARM_CLIENT_ID\
+ARM_CLIENT_SECRET\
+ARM_TENANT_ID
